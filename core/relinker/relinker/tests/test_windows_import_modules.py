@@ -575,6 +575,12 @@ def main():
                     imports = imported_symbols_by_dll(library)
                     assert {'__iob_func', 'fputs'} <= imports.get('msvcrt.dll', set()), (library, imports)
                     assert not any(name.startswith('api-ms-win-crt-') for name in imports), (library, imports)
+                if runtime == 'mixed':
+                    imports = imported_symbols_by_dll(library)
+                    assert '__iob_func' in imports.get('msvcrt.dll', set()), (library, imports)
+                    assert 'fputs' not in imports.get('msvcrt.dll', set()), (library, imports)
+                    assert any('fputs' in symbols and (name == 'ucrtbase.dll' or name.startswith('api-ms-win-crt-'))
+                               for name, symbols in imports.items()), (library, imports)
 
                 def convert_stdio_case(case_name):
                     case = work / case_name
@@ -582,7 +588,10 @@ def main():
                     libs = case / 'libs'
                     libs.mkdir()
                     source = case / 'input.elf'
-                    source.write_bytes(executable('a.prx', 'shared'))
+                    image = executable('a.prx', 'shared')
+                    if runtime == 'mixed':
+                        image[0x4000:0x400f] = b'\x48\x83\xec\x28\xff\x15' + struct.pack('<i', 0x4a20 - 0x400a) + b'\x48\x83\xc4\x28\xc3'
+                    source.write_bytes(image)
                     executable_path = case / 'output.exe'
                     result = subprocess.run([str(relinker), '--windows', '--windows-gui', str(source), str(executable_path)],
                                             capture_output=True, text=True, timeout=30)
@@ -590,13 +599,24 @@ def main():
                     (libs / 'a.prx').write_bytes(library.read_bytes())
                     return executable_path, executable_path.parent / 'anyps5.log'
 
-                executable_path, log = convert_stdio_case(f'gui-dll-{runtime}-both-missing')
+                def check_mixed_output(stdout, stderr):
+                    if runtime != 'mixed':
+                        return
+                    for library_name in ('UCRT', 'MSVCRT'):
+                        assert stdout.count(f'Windows DLL stdout probe {library_name}') == 1, (runtime, stdout)
+                        assert stderr.count(f'Windows DLL stderr probe {library_name}') == 1, (runtime, stderr)
+                    assert not (executable_path.parent / 'prx' / 'anyps5.log').exists(), executable_path
+
+                suffix = '-ü日' if runtime == 'mixed' else ''
+                executable_path, log = convert_stdio_case(f'gui-dll-{runtime}-both-missing{suffix}')
                 run_status = exit_code_without_standard_handles(executable_path)
                 assert run_status == 11, (runtime, hex(run_status))
                 assert log.is_file(), (runtime, log)
                 content = log.read_text(errors='replace')
                 assert 'Windows DLL stdout probe' in content, (runtime, content)
                 assert 'Windows DLL stderr probe' in content, (runtime, content)
+                assert 'Transferring control to ELF entry point' in content, (runtime, content)
+                check_mixed_output(content, content)
 
                 executable_path, log = convert_stdio_case(f'gui-dll-{runtime}-stdout-missing')
                 run_status, stdout, stderr = run_with_standard_pipes(executable_path, False, True)
@@ -606,6 +626,8 @@ def main():
                 assert 'Windows DLL stdout probe' in content, (runtime, content)
                 assert 'Windows DLL stderr probe' in stderr, (runtime, stderr)
                 assert not stdout
+                assert 'Transferring control to ELF entry point' in content, (runtime, content)
+                check_mixed_output(content, stderr)
 
                 executable_path, log = convert_stdio_case(f'gui-dll-{runtime}-stderr-missing')
                 run_status, stdout, stderr = run_with_standard_pipes(executable_path, True, False)
@@ -615,6 +637,7 @@ def main():
                 assert 'Windows DLL stdout probe' in stdout, (runtime, stdout)
                 assert 'Windows DLL stderr probe' in content, (runtime, content)
                 assert not stderr
+                check_mixed_output(stdout, content)
 
                 executable_path, log = convert_stdio_case(f'gui-dll-{runtime}-both-redirected')
                 run_status, stdout, stderr = run_with_standard_pipes(executable_path, True, True)
@@ -622,6 +645,7 @@ def main():
                 assert 'Windows DLL stdout probe' in stdout, (runtime, stdout)
                 assert 'Windows DLL stderr probe' in stderr, (runtime, stderr)
                 assert not log.exists(), (runtime, log)
+                check_mixed_output(stdout, stderr)
 
             for name, owner, symbol, expected, message in [
                     ('missing-symbol-gui', 'a.prx', 'absent#A#B', 0xc0000139, 'unresolved ELF import absent'),

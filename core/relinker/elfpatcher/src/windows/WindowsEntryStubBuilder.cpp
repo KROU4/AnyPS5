@@ -2,6 +2,7 @@
 #include <elfpatcher/windows/WindowsStubEmitter.hpp>
 #include <elfpatcher/windows/WindowsDependencyStubBuilder.hpp>
 #include <elfpatcher/windows/WindowsGuestStartup.hpp>
+#include <elfpatcher/windows/WindowsStandardStreams.hpp>
 #include <io/BufferUtils.hpp>
 #include <algorithm>
 #include <cctype>
@@ -236,6 +237,8 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
     errors.push_back("FAIL: cannot make the executable directory the current directory\n");
     const auto traceError = errors.size();
     errors.push_back("FAIL: libc.prx does not export TraceImport_nid_no_patch\n");
+    const auto streamsError = errors.size();
+    errors.push_back("FAIL: cannot redirect Windows CRT output streams\n");
     std::vector<std::uint32_t> errorRvas;
     for (const auto& error : errors)
         errorRvas.push_back(addString(error));
@@ -246,6 +249,7 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
     if (dependencyDiagnostics)
         dependencyBuilder.emplace(result.Data);
     std::vector<std::size_t> dependencyCalls;
+    const WindowsStandardStreams standardStreams(result.Data);
     result.Code.Rva = AlignRva(dataRva + data.size());
     WindowsStubEmitter code(result.Code.Rva);
 
@@ -505,6 +509,21 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
             code.PatchBranch(next, code.GetRva());
         }
     }
+
+    code.Rip({0x48, 0x8b, 0x05}, logHandle);
+    code.Emit({0x48, 0x85, 0xc0});
+    const auto noLog = code.Branch({0x0f, 0x84});
+    code.Emit({0x4c, 0x89, 0xe7});
+    code.Rip({0x48, 0x8d, 0x35}, logName);
+    code.Emit({0xb9});
+    code.U32(CheckedRva(logFileName.size() + 1));
+    code.Emit({0x66, 0xf3, 0xa5});
+    const auto streamFailures = standardStreams.Initialize(code, nativeImports, logHandle, modulePath);
+    const auto streamsReady = code.Branch({0xe9});
+    for (const auto branch : streamFailures) code.PatchBranch(branch, code.GetRva());
+    fail(streamsError, 0xc0000001u);
+    code.PatchBranch(streamsReady, code.GetRva());
+    code.PatchBranch(noLog, code.GetRva());
 
     if (traceImports) {
         code.Rip({0x48, 0x8b, 0x0d}, CheckedRva(handles + *traceProvider * 8));

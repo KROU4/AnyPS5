@@ -5,6 +5,7 @@ add_library(relinker_core STATIC
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/linux/LinuxGuestModuleWriter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsGuestModuleWriter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsGuestStartup.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsStandardStreams.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/relinker/src/guest/GuestImageReader.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/relinker/src/guest/GuestModuleBuilder.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsPePatcher.cpp
@@ -523,6 +524,13 @@ if(BUILD_TESTING)
                 target_link_options(windows_stdio_host_msvcrt PRIVATE -nostdlib -Wl,--no-undefined -Wl,--entry,0)
                 set_target_properties(windows_stdio_host_msvcrt PROPERTIES PREFIX "" WINDOWS_EXPORT_ALL_SYMBOLS ON)
                 list(APPEND windows_stdio_host_arguments $<TARGET_FILE:windows_stdio_host_msvcrt>)
+                add_library(windows_stdio_host_mixed SHARED elfpatcher/tests/WindowsMixedStdioHost.cpp)
+                add_dependencies(windows_stdio_host_mixed windows_stdio_msvcrt_import)
+                target_link_libraries(windows_stdio_host_mixed PRIVATE ucrt "${msvcrtImportLibrary}")
+                target_compile_options(windows_stdio_host_mixed PRIVATE -mcrtdll=ucrt -fno-builtin)
+                target_link_options(windows_stdio_host_mixed PRIVATE -mcrtdll=ucrt -static-libgcc -static-libstdc++)
+                set_target_properties(windows_stdio_host_mixed PROPERTIES PREFIX "" WINDOWS_EXPORT_ALL_SYMBOLS ON)
+                list(APPEND windows_stdio_host_arguments $<TARGET_FILE:windows_stdio_host_mixed>)
             else()
                 add_library(windows_stdio_host SHARED elfpatcher/tests/WindowsStdioHost.cpp)
                 set_target_properties(windows_stdio_host PROPERTIES PREFIX "" WINDOWS_EXPORT_ALL_SYMBOLS ON)
